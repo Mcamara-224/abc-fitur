@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: chapeau-noir-bot
+    env: node
+    buildCommand: npm install
+    startCommand: node index.js
+    envVars:
+      - key: API_URL
+        value: https://bj-tricks-ai.vercel.app/chat
+      - key: GROUP_LINK
+        sync: false
+      - key: ADMIN_NUMBER
+        sync: false
+      - key: AI_RESPONSE_DELAY
+        value: "2900"
+      - key: SPAM_LIMIT
+        value: "5"
+      - key: SPAM_WINDOW
+        value: "10000"
