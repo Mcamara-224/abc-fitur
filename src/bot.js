@@ -18,8 +18,6 @@ async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
   const { version } = await fetchLatestBaileysVersion();
 
-  startPairingServer(process.env.PORT || 3000);
-
   const sock = makeWASocket({
     version,
     logger: pino({ level: 'silent' }),
@@ -28,25 +26,23 @@ async function startBot() {
     browser: ['ChapeauNoir', 'Chrome', '1.0.0'],
   });
 
+  // Démarrer serveur pairage
+  startPairingServer(process.env.PORT || 3000, async function(phone) {
+    if (!sock.authState.creds.registered) {
+      try {
+        var code = await sock.requestPairingCode(phone);
+        code = code.match(/.{1,4}/g).join('-');
+        console.log('Code pairage: ' + code);
+        setPairingCode(code);
+      } catch(e) {
+        console.error('Erreur pairage:', e.message);
+      }
+    }
+  });
+
   sock.ev.on('creds.update', saveCreds);
 
-  // Générer le code pairage
-  if (!sock.authState.creds.registered) {
-    var phoneNumber = config.adminNumber.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
-    setTimeout(async function() {
-      try {
-        var code = await sock.requestPairingCode(phoneNumber);
-        code = code.match(/.{1,4}/g).join('-');
-        console.log('\n\n🎩 CODE PAIRAGE : ' + code + '\n\n');
-        setPairingCode(code);
-      } catch (e) {
-        console.error('Erreur code pairage:', e.message);
-      }
-    }, 3000);
-  }
-
   sock.ev.on('connection.update', function(update) {
-    var qr = update.qr;
     var connection = update.connection;
     var lastDisconnect = update.lastDisconnect;
 
@@ -58,8 +54,11 @@ async function startBot() {
       if (code !== DisconnectReason.loggedOut) {
         console.log('Reconnexion...');
         setTimeout(startBot, 3000);
+      } else {
+        console.log('Deconnecte.');
       }
     }
+
     if (connection === 'open') {
       setConnected();
       console.log('ChapeauNoir connecte 🎩');
@@ -113,9 +112,11 @@ async function handleMessage(sock, msg) {
     text = text.trim();
     if (!text) return;
 
+    // Vérif ban permanent
     var permBanned = await memberManager.isPermanentlyBanned(senderId);
     if (permBanned) return;
 
+    // Vérif admin
     var groupMetadata = await sock.groupMetadata(groupId).catch(function() {
       return null;
     });
@@ -136,21 +137,25 @@ async function handleMessage(sock, msg) {
 
     await memberManager.registerMember(senderId, senderName, isAdminUser);
 
+    // Anti-spam
     if (!isAdminUser) {
       var spamResult = checkSpam(senderId);
       if (spamResult.isSpam) {
         if (spamResult.isBanned) {
           await sock.sendMessage(groupId, {
-            text: 'Banni temporairement pour spam. Temps restant: ' + spamResult.remaining + 's',
+            text: '⛔ @' + senderId.split('@')[0] + ' Banni temporairement pour spam.\n⏱️ Temps restant: ' + spamResult.remaining + 's',
+            mentions: [senderId],
           });
         }
         return;
       }
     }
 
+    // Anti-liens
     var linkBlocked = await checkForLinks(sock, msg, groupId, senderId, isAdminUser);
     if (linkBlocked) return;
 
+    // Commandes
     var isCommand = text.startsWith('!');
     var parts = text.toLowerCase().split(' ');
     var command = parts[0];
@@ -169,9 +174,11 @@ async function handleMessage(sock, msg) {
       if (handledMember) return;
     }
 
+    // Réponse IA
     if (!isBotActive()) return;
 
     await sock.sendPresenceUpdate('composing', groupId);
+
     await new Promise(function(resolve) {
       setTimeout(resolve, config.aiDelay);
     });
