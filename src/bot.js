@@ -12,43 +12,56 @@ const { checkSpam } = require('./antiSpam');
 const memberManager = require('./memberManager');
 const { handleAdminCommand, handleMemberCommand, isBotActive } = require('./commands');
 const { welcomeMember, farewellMember, checkForLinks } = require('./groupManager');
-const { startQRServer, setQR } = require('./qrServer');
+const { startPairingServer, setPairingCode, setConnected } = require('./qrServer');
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
   const { version } = await fetchLatestBaileysVersion();
 
-  startQRServer(process.env.PORT || 3000);
+  startPairingServer(process.env.PORT || 3000);
 
   const sock = makeWASocket({
     version,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: true,
+    printQRInTerminal: false,
     auth: state,
     browser: ['ChapeauNoir', 'Chrome', '1.0.0'],
   });
 
   sock.ev.on('creds.update', saveCreds);
 
+  // Générer le code pairage
+  if (!sock.authState.creds.registered) {
+    var phoneNumber = config.adminNumber.replace('@s.whatsapp.net', '').replace(/[^0-9]/g, '');
+    setTimeout(async function() {
+      try {
+        var code = await sock.requestPairingCode(phoneNumber);
+        code = code.match(/.{1,4}/g).join('-');
+        console.log('\n\n🎩 CODE PAIRAGE : ' + code + '\n\n');
+        setPairingCode(code);
+      } catch (e) {
+        console.error('Erreur code pairage:', e.message);
+      }
+    }, 3000);
+  }
+
   sock.ev.on('connection.update', function(update) {
     var qr = update.qr;
     var connection = update.connection;
     var lastDisconnect = update.lastDisconnect;
 
-    if (qr) {
-      setQR(qr);
-      console.log('QR Code disponible sur /qr');
-    }
     if (connection === 'close') {
       var code = lastDisconnect &&
         lastDisconnect.error &&
         lastDisconnect.error.output &&
         lastDisconnect.error.output.statusCode;
       if (code !== DisconnectReason.loggedOut) {
+        console.log('Reconnexion...');
         setTimeout(startBot, 3000);
       }
     }
     if (connection === 'open') {
+      setConnected();
       console.log('ChapeauNoir connecte 🎩');
     }
   });
@@ -69,7 +82,6 @@ async function startBot() {
   sock.ev.on('messages.upsert', async function(upsert) {
     if (upsert.type !== 'notify') return;
     var messages = upsert.messages;
-
     for (var i = 0; i < messages.length; i++) {
       await handleMessage(sock, messages[i]);
     }
@@ -160,7 +172,6 @@ async function handleMessage(sock, msg) {
     if (!isBotActive()) return;
 
     await sock.sendPresenceUpdate('composing', groupId);
-
     await new Promise(function(resolve) {
       setTimeout(resolve, config.aiDelay);
     });
